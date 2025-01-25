@@ -4,10 +4,12 @@ import time
 import argparse
 import subprocess
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import mss
 import mss.tools
+
+from PIL import Image
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -32,10 +34,10 @@ def make_sure_dir_exists(dir_path):
 
 def get_current_day_folder(root_dir):
     """Return the path to today's folder (YYYY-MM-DD) inside root_dir."""
-    day_str = datetime.now().strftime("%Y-%m-%d")
+    day_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return os.path.join(root_dir, day_str)
 
-def archive_day(day_folder, archive_folder, fps, height, bitrate):
+def archive_day(day_folder, archive_folder, fps, bitrate):
     """
     Use ffmpeg to turn all .png files in `day_folder` into a single .mp4 video
     stored in `archive_folder` with filename YYYY-MM-DD.mp4.
@@ -43,14 +45,15 @@ def archive_day(day_folder, archive_folder, fps, height, bitrate):
     day_name = os.path.basename(day_folder)  # e.g., '2025-01-23'
     output_file = os.path.join(archive_folder, f"{day_name}.mp4")
 
+    input_pattern = os.path.join(day_folder, "*.png").replace('\\', '/')
+
     # Build ffmpeg command
     cmd = [
         "ffmpeg",
         "-y",  # Overwrite existing file if any
         "-framerate", str(fps),
         "-pattern_type", "glob",
-        "-i", os.path.join(day_folder, "*.png"),
-        "-vf", f"scale=-2:{height}",
+        "-i", input_pattern,
         "-b:v", f"{bitrate}k",
         output_file
     ]
@@ -117,13 +120,13 @@ def run_recorder(fps, root_dir, height, bitrate, archive_limit):
 
     with mss.mss() as sct:
         while True:
-            now = datetime.now()
-            new_day_str = now.strftime("%Y-%m-%d")
+            utc_now = datetime.now(timezone.utc)
+            new_day_str = utc_now.strftime("%Y-%m-%d")
 
             # If the day changed, archive the old folder, then cleanup old ones
             if new_day_str != current_day_str:
                 # Archive the just-finished day
-                archive_day(current_day_folder, archive_folder, fps, height, bitrate)
+                archive_day(current_day_folder, archive_folder, fps, bitrate)
 
                 # Remove old folders beyond the archive limit
                 cleanup_old_folders(root_dir, archive_limit)
@@ -134,11 +137,17 @@ def run_recorder(fps, root_dir, height, bitrate, archive_limit):
                 make_sure_dir_exists(current_day_folder)
 
             # Capture a screenshot
-            timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
+            utc_now = datetime.now(timezone.utc)  # Get the current UTC time
+            timestamp = utc_now.strftime("%Y-%m-%dT%H-%M-%S.%f")
             screenshot_filename = os.path.join(current_day_folder, f"{timestamp}.png")
 
             screenshot = sct.grab(sct.monitors[1])  # Usually primary display
-            mss.tools.to_png(screenshot.rgb, screenshot.size, output=screenshot_filename)
+
+            # Resize the image to the specified height while maintaining aspect ratio
+            with Image.frombytes("RGB", screenshot.size, screenshot.rgb) as img:
+                width = int(screenshot.width * (height / screenshot.height))
+                resized_img = img.resize((width, height), Image.Resampling.LANCZOS)
+                resized_img.save(screenshot_filename, "PNG")
 
             time.sleep(sleep_interval)
 

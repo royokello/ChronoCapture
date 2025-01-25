@@ -9,7 +9,7 @@
 - **Storage Management**: Keep the last *N* days of screenshots while archiving older content as videos.
 - **Customizable Output**:
   - Frame rate (FPS) for screenshots and video playback.
-  - Video resolution (e.g., 256p, 512p, 1024p) and bitrate (e.g., 512kbps, 1024kbps, 2048kbps).
+  - Video resolution (e.g., 512p, 1024p) and bitrate (e.g., 1024kbps, 2048kbps).
   - Configurable archive limit to manage storage efficiently.
 - **Seamless Automation**: Automatically handles daily rollover and archival tasks.
 
@@ -20,13 +20,22 @@
 
 ## Getting Started
 1. Clone this repository.
-2. Install dependencies:
+2. Create and run environment
+  ```bash
+  python -m venv venv
+  venv\Scripts\activate
+  ```
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the recorder:
+4. Run the recorder:
   ```bash
   python main.py --fps 1 --root_dir /path/to/recordings --height 512 --bitrate 1024 --archive_limit 3
   ```
 
-4. View your daily folders or check the archive folder for automatically generated videos.
+5. View your daily folders or check the archive folder for automatically generated videos.
+
+## Services
+
+1. Windows
