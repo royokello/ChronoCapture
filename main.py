@@ -15,6 +15,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Continuously record screenshots based on timescale and frames, archive them daily, and keep only N days of folders."
     )
+    parser.add_argument("--ffmpeg_path", "-fp", type=str, default="ffmpeg",
+                        help="Path to ffmpeg executable (default: 'ffmpeg' from system PATH).")
     parser.add_argument("--timescale", "-ts", type=str, choices=['hour', 'minute'], required=True,
                         help="Timescale for capturing frames (hour or minute).")
     parser.add_argument("--frames", "-f", type=int, required=True,
@@ -39,7 +41,7 @@ def get_current_day_folder(root_dir):
     day_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return os.path.join(root_dir, day_str)
 
-def archive_day(day_folder, archive_folder, effective_fps, bitrate):
+def archive_day(day_folder, archive_folder, effective_fps, bitrate, ffmpeg_path):
     """
     Use ffmpeg to turn all .png files in `day_folder` into a single .mp4 video
     stored in `archive_folder` with filename YYYY-MM-DD.mp4.
@@ -51,7 +53,7 @@ def archive_day(day_folder, archive_folder, effective_fps, bitrate):
 
     # Build ffmpeg command
     cmd = [
-        "ffmpeg",
+        ffmpeg_path,
         "-y",  # Overwrite existing file if any
         "-framerate", str(effective_fps),
         "-pattern_type", "glob",
@@ -91,7 +93,7 @@ def _looks_like_date(name):
     except ValueError:
         return False
 
-def run_recorder(timescale, frames, root_dir, height, bitrate, archive_limit):
+def run_recorder(timescale, frames, root_dir, height, bitrate, archive_limit, ffmpeg_path):
     """Main loop to capture screenshots and manage archives."""
     archive_folder = os.path.join(root_dir, "archive")
     make_sure_dir_exists(archive_folder)
@@ -136,6 +138,7 @@ def run_recorder(timescale, frames, root_dir, height, bitrate, archive_limit):
 def main():
     args = parse_arguments()
     run_recorder(
+        ffmpeg_path=args.ffmpeg_path,
         timescale=args.timescale,
         frames=args.frames,
         root_dir=args.root_dir,
