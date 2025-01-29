@@ -13,10 +13,12 @@ from PIL import Image
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Continuously record screenshots at a given FPS, archive them daily, and keep only N days of folders."
+        description="Continuously record screenshots based on timescale and frames, archive them daily, and keep only N days of folders."
     )
-    parser.add_argument("--fps", type=int, default=1,
-                        help="Number of screenshots per second (also used for final video FPS).")
+    parser.add_argument("--timescale", "-ts", type=str, choices=['hour', 'minute'], required=True,
+                        help="Timescale for capturing frames (hour or minute).")
+    parser.add_argument("--frames", "-f", type=int, required=True,
+                        help="Number of frames to capture per timescale unit.")
     parser.add_argument("--root_dir", type=str, default=".",
                         help="Root directory to store daily folders and the 'archive' folder.")
     parser.add_argument("--height", type=int, default=512,
@@ -37,7 +39,7 @@ def get_current_day_folder(root_dir):
     day_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return os.path.join(root_dir, day_str)
 
-def archive_day(day_folder, archive_folder, fps, bitrate):
+def archive_day(day_folder, archive_folder, effective_fps, bitrate):
     """
     Use ffmpeg to turn all .png files in `day_folder` into a single .mp4 video
     stored in `archive_folder` with filename YYYY-MM-DD.mp4.
@@ -51,7 +53,7 @@ def archive_day(day_folder, archive_folder, fps, bitrate):
     cmd = [
         "ffmpeg",
         "-y",  # Overwrite existing file if any
-        "-framerate", str(fps),
+        "-framerate", str(effective_fps),
         "-pattern_type", "glob",
         "-i", input_pattern,
         "-b:v", f"{bitrate}k",
@@ -65,26 +67,17 @@ def archive_day(day_folder, archive_folder, fps, bitrate):
         print(f"[ERROR] ffmpeg failed to archive {day_folder}: {e}")
 
 def cleanup_old_folders(root_dir, archive_limit):
-    """
-    Remove day folders in `root_dir` that are older than `archive_limit` days.
-    Does NOT remove anything from the 'archive' folder—those .mp4 files remain indefinitely.
-    """
-    # Determine the set of date strings we want to keep in the main root
+    """Remove day folders in `root_dir` older than `archive_limit` days."""
     today = datetime.now().date()
     keep_dates = set(
         (today - timedelta(days=i)).strftime("%Y-%m-%d")
         for i in range(archive_limit)
     )
 
-    # Check each item in the root_dir
     for item in os.listdir(root_dir):
         item_path = os.path.join(root_dir, item)
-        
-        # Skip the 'archive' folder itself
         if item == "archive":
             continue
-        
-        # If it's a directory named YYYY-MM-DD and it's not in keep_dates, remove it
         if os.path.isdir(item_path) and _looks_like_date(item):
             if item not in keep_dates:
                 print(f"[INFO] Removing old folder from main dir: {item_path}")
@@ -98,52 +91,41 @@ def _looks_like_date(name):
     except ValueError:
         return False
 
-def run_recorder(fps, root_dir, height, bitrate, archive_limit):
-    """
-    Continuously record screenshots at `fps`.
-    - Each day is stored in `root_dir/YYYY-MM-DD/`.
-    - At midnight (when the day changes), convert the previous day's screenshots to a video in `root_dir/archive/`.
-    - Remove folders older than `archive_limit` days from the main root.
-    """
+def run_recorder(timescale, frames, root_dir, height, bitrate, archive_limit):
+    """Main loop to capture screenshots and manage archives."""
     archive_folder = os.path.join(root_dir, "archive")
     make_sure_dir_exists(archive_folder)
 
-    # Prepare today's folder
+    # Calculate effective FPS and sleep interval
+    timescale_seconds = 3600 if timescale == 'hour' else 60
+    effective_fps = frames / timescale_seconds
+    sleep_interval = 1.0 / effective_fps
+
     current_day_str = datetime.now().strftime("%Y-%m-%d")
     current_day_folder = os.path.join(root_dir, current_day_str)
     make_sure_dir_exists(current_day_folder)
 
     print("[INFO] Starting screenshot capture...")
-    print(f"      FPS: {fps}, Save folder: {root_dir}, Archive limit: {archive_limit} days")
-
-    sleep_interval = 1.0 / fps
+    print(f"      Timescale: {timescale}, Frames per {timescale}: {frames}, Effective FPS: {effective_fps:.2f}")
 
     with mss.mss() as sct:
         while True:
             utc_now = datetime.now(timezone.utc)
             new_day_str = utc_now.strftime("%Y-%m-%d")
 
-            # If the day changed, archive the old folder, then cleanup old ones
             if new_day_str != current_day_str:
-                # Archive the just-finished day
-                archive_day(current_day_folder, archive_folder, fps, bitrate)
-
-                # Remove old folders beyond the archive limit
+                archive_day(current_day_folder, archive_folder, effective_fps, bitrate)
                 cleanup_old_folders(root_dir, archive_limit)
-
-                # Switch to new day's folder
                 current_day_str = new_day_str
                 current_day_folder = os.path.join(root_dir, current_day_str)
                 make_sure_dir_exists(current_day_folder)
 
-            # Capture a screenshot
-            utc_now = datetime.now(timezone.utc)  # Get the current UTC time
+            # Capture screenshot
+            utc_now = datetime.now(timezone.utc)
             timestamp = utc_now.strftime("%Y-%m-%dT%H-%M-%S.%f")
             screenshot_filename = os.path.join(current_day_folder, f"{timestamp}.png")
 
-            screenshot = sct.grab(sct.monitors[1])  # Usually primary display
-
-            # Resize the image to the specified height while maintaining aspect ratio
+            screenshot = sct.grab(sct.monitors[1])
             with Image.frombytes("RGB", screenshot.size, screenshot.rgb) as img:
                 width = int(screenshot.width * (height / screenshot.height))
                 resized_img = img.resize((width, height), Image.Resampling.LANCZOS)
@@ -154,7 +136,8 @@ def run_recorder(fps, root_dir, height, bitrate, archive_limit):
 def main():
     args = parse_arguments()
     run_recorder(
-        fps=args.fps,
+        timescale=args.timescale,
+        frames=args.frames,
         root_dir=args.root_dir,
         height=args.height,
         bitrate=args.bitrate,
