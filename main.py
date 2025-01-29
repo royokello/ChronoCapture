@@ -19,13 +19,13 @@ def parse_arguments():
                         help="Timescale for capturing frames (hour or minute).")
     parser.add_argument("--frames", "-f", type=int, required=True,
                         help="Number of frames to capture per timescale unit.")
-    parser.add_argument("--root_dir", type=str, default=".",
+    parser.add_argument("--root_dir", "-r", type=str, default=".",
                         help="Root directory to store daily folders and the 'archive' folder.")
-    parser.add_argument("--height", type=int, default=512,
+    parser.add_argument("--height", "-H", type=int, default=512,
                         help="Height of the output video. Width is scaled to maintain aspect ratio.")
-    parser.add_argument("--bitrate", type=int, default=1024,
+    parser.add_argument("--bitrate", "-b", type=int, default=1024,
                         help="Video bitrate (e.g., 1024).")
-    parser.add_argument("--archive_limit", type=int, default=1,
+    parser.add_argument("--archive_limit", "-a", type=int, default=1,
                         help="Number of days to keep in the main root_dir. Older folders are removed (their videos stay in archive).")
     return parser.parse_args()
 
