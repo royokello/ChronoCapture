@@ -1,19 +1,17 @@
-#!/usr/bin/env python3
 import os
 import time
 import argparse
 import subprocess
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import mss
 import mss.tools
-
 from PIL import Image
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Continuously record screenshots and archive them based on a specified period (day or hour)."
+        description="Continuously record screenshots and archive them hourly."
     )
     parser.add_argument("--ffmpeg_path", "-fp", type=str, default="ffmpeg",
                         help="Path to ffmpeg executable (default: 'ffmpeg').")
@@ -22,218 +20,236 @@ def parse_arguments():
     parser.add_argument("--frames", "-f", type=int, required=True,
                         help="Number of frames to capture per timescale unit.")
     parser.add_argument("--root_dir", "-r", type=str, default=".",
-                        help="Root directory to store screenshot folders and the 'archive' folder.")
+                        help="Root directory to store day folders with screenshots and videos.")
     parser.add_argument("--height", "-H", type=int, default=512,
                         help="Height of the output video. Width is scaled to maintain aspect ratio.")
     parser.add_argument("--bitrate", "-b", type=int, default=1024,
                         help="Video bitrate in kilobits (e.g., 1024).")
     parser.add_argument("--archive_limit", "-a", type=int, default=1,
-                        help="Number of periods (days or hours) to keep in the main root_dir. Older images are removed.")
-    parser.add_argument("--archive_period", "-ap", type=str, choices=['day', 'hour'], default='day',
-                        help="Period for archiving: 'day' for daily archiving, 'hour' for hourly archiving.")
+                        help="Number of latest hour directories (for today) to keep. Older hours will be archived and deleted.")
     return parser.parse_args()
 
 def make_sure_dir_exists(dir_path):
-    """Create the directory if it doesn't exist."""
+    """Ensure that the directory exists."""
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
 
-def archive_day(day_folder, archive_folder, effective_fps, bitrate, ffmpeg_path):
+def archive_hour(day, hour, root_dir, effective_fps, bitrate, ffmpeg_path):
     """
-    Archive all PNG files in day_folder into a single video named YYYY-MM-DD.mp4
-    placed directly in the archive_folder.
+    Archive all PNG images in the hour folder (located at root_dir/day/hour)
+    into a video file named '{hour}.mp4' saved in the same day folder.
+    Additionally, embed chapter markers into the output video.
+    
+    Each chapter corresponds to a frame and its title is the timestamp in the format:
+         yyyy-mm-dd hh:mm:ss.ssssss
+    The timestamp is derived from the image filename which is assumed to be:
+         {unix_seconds}{microseconds:06d}.png
+
+    Returns True on success, False otherwise.
     """
-    day_name = os.path.basename(day_folder)
-    output_file = os.path.join(archive_folder, f"{day_name}.mp4")
-    input_pattern = os.path.join(day_folder, "*.png").replace('\\', '/')
-    
-    cmd = [
-        ffmpeg_path,
-        "-y",  # overwrite output file if exists
-        "-framerate", str(effective_fps),
-        "-pattern_type", "glob",
-        "-i", input_pattern,
-        "-b:v", f"{bitrate}k",
-        output_file
-    ]
+    hour_folder = os.path.join(root_dir, day, hour)
+    if not os.path.exists(hour_folder):
+        print(f"[WARN] Hour folder {hour_folder} does not exist for archiving {day} {hour}. Skipping.")
+        return False
 
-    print(f"[INFO] Archiving day {day_name} -> {output_file}")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] ffmpeg failed to archive day {day_name}: {e}")
+    # Gather and sort PNG files.
+    image_files = [f for f in os.listdir(hour_folder) if f.endswith(".png")]
+    if not image_files:
+        print(f"[WARN] No PNG files found in {hour_folder}.")
+        return False
+    image_files.sort()  # Assumes filenames sort correctly (they are based on a UNIX timestamp)
 
-def archive_hour(period_str, root_dir, archive_folder, effective_fps, bitrate, ffmpeg_path):
-    """
-    Archive PNG files for a given hour (period_str formatted as YYYY-MM-DDT%H).
-    The screenshots for that hour are assumed to be stored in the day folder.
-    The resulting video is saved in archive/<day>/<hour>.mp4.
-    """
-    try:
-        day, hour = period_str.split("T")
-    except ValueError:
-        print(f"[ERROR] Invalid period string: {period_str}")
-        return
+    # Compute the frame duration (in seconds).
+    frame_duration = 1.0 / effective_fps
 
-    day_folder = os.path.join(root_dir, day)
-    if not os.path.exists(day_folder):
-        print(f"[WARN] Day folder {day_folder} does not exist for archiving hour {period_str}. Skipping.")
-        return
+    # Create a temporary ffconcat file listing all image files.
+    concat_file = os.path.join(hour_folder, "filelist.txt")
+    with open(concat_file, "w") as f:
+        f.write("ffconcat version 1.0\n")
+        for i, fname in enumerate(image_files):
+            full_path = os.path.join(hour_folder, fname)
+            f.write(f"file '{full_path}'\n")
+            # For all but the last file, specify the duration.
+            if i < len(image_files) - 1:
+                f.write(f"duration {frame_duration:.6f}\n")
+        # As required by ffconcat, add the last file a second time without a duration.
+        last_full_path = os.path.join(hour_folder, image_files[-1])
+        f.write(f"file '{last_full_path}'\n")
 
-    # Look for screenshots that begin with "YYYY-MM-DDT%H-"
-    input_pattern = os.path.join(day_folder, f"{period_str}-*.png").replace('\\', '/')
-    
-    # Create an archive subfolder for this day if necessary.
-    day_archive_folder = os.path.join(archive_folder, day)
-    make_sure_dir_exists(day_archive_folder)
-    
-    output_file = os.path.join(day_archive_folder, f"{hour}.mp4")
-    
+    # Create a temporary ffmetadata file to hold chapter markers.
+    chapters_file = os.path.join(hour_folder, "chapters.txt")
+    total_frames = len(image_files)
+    total_video_length = total_frames * frame_duration
+    with open(chapters_file, "w") as f:
+        f.write(";FFMETADATA1\n")
+        for i, fname in enumerate(image_files):
+            # Calculate chapter start and end times (in seconds)
+            start = i * frame_duration
+            end = (i + 1) * frame_duration if i < total_frames - 1 else total_video_length
+            # Convert to integer microseconds (using TIMEBASE 1/1000000)
+            start_us = int(round(start * 1_000_000))
+            end_us = int(round(end * 1_000_000))
+            # Derive the chapter title from the filename.
+            base = os.path.splitext(fname)[0]
+            try:
+                unix_seconds = int(base[:10])
+                microseconds = int(base[10:16])
+                dt = datetime.fromtimestamp(unix_seconds, timezone.utc).replace(microsecond=microseconds)
+                chapter_title = dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+            except Exception as e:
+                chapter_title = "InvalidTimestamp"
+            # Write the chapter block.
+            f.write("[CHAPTER]\n")
+            f.write("TIMEBASE=1/1000000\n")
+            f.write(f"START={start_us}\n")
+            f.write(f"END={end_us}\n")
+            f.write(f"title={chapter_title}\n")
+
+    output_file = os.path.join(root_dir, day, f"{hour}.mp4")
+
+    # Use ffmpeg to create the video from the concat file and embed the chapters.
+    # By providing the chapters file as a second input and mapping its metadata,
+    # the output video will include the chapter markers.
     cmd = [
         ffmpeg_path,
         "-y",
-        "-framerate", str(effective_fps),
-        "-pattern_type", "glob",
-        "-i", input_pattern,
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_file,
+        "-i", chapters_file,
+        "-map_metadata", "1",
         "-b:v", f"{bitrate}k",
         output_file
     ]
 
-    print(f"[INFO] Archiving hour {period_str} -> {output_file}")
+    print(f"[INFO] Archiving hour {day} {hour} -> {output_file}")
     try:
         subprocess.run(cmd, check=True)
+        success = True
     except subprocess.CalledProcessError as e:
-        print(f"[ERROR] ffmpeg failed to archive hour {period_str}: {e}")
+        print(f"[ERROR] ffmpeg failed to archive hour {day} {hour}: {e}")
+        success = False
 
-def cleanup_old_images(root_dir, archive_limit, archive_period):
+    # Clean up temporary files.
+    if os.path.exists(concat_file):
+        os.remove(concat_file)
+    if os.path.exists(chapters_file):
+        os.remove(chapters_file)
+
+    return success
+
+def cleanup_hour_folders(root_dir, archive_limit, ffmpeg_path, effective_fps, bitrate):
     """
-    Remove old screenshots from the main root_dir.
-    For daily archiving, remove whole day folders older than the cutoff date.
-    For hourly archiving, remove individual screenshots older than the cutoff time.
+    Iterate over all day folders (formatted as YYYY-MM-DD) in the root_dir.
+    
+    For each day folder:
+      - For past days, archive (if needed) and remove all hour folders.
+      - For today's folder, keep the latest 'archive_limit' hour folders (excluding the current hour)
+        and for older hour folders, archive them (if not already) and then remove the folder.
+    
+    Note: An hour folder is only removed if its corresponding video file (HH.mp4) exists.
     """
-    now = datetime.now(timezone.utc)
-    if archive_period == 'day':
-        cutoff_date = (now - timedelta(days=archive_limit)).date()
-        # Iterate over items in root_dir and remove any day folder older than cutoff_date.
-        for item in os.listdir(root_dir):
-            item_path = os.path.join(root_dir, item)
-            if item == "archive":
-                continue
-            if os.path.isdir(item_path) and _looks_like_date(item):
-                try:
-                    folder_date = datetime.strptime(item, "%Y-%m-%d").date()
-                except ValueError:
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for day in os.listdir(root_dir):
+        day_path = os.path.join(root_dir, day)
+        if not os.path.isdir(day_path):
+            continue
+        # Check if the folder name looks like a date (YYYY-MM-DD).
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        # List hour folders (they should be named with two digits, e.g., "00", "01", ..., "23").
+        hour_folders = [h for h in os.listdir(day_path)
+                        if os.path.isdir(os.path.join(day_path, h)) and h.isdigit() and len(h) == 2]
+        if not hour_folders:
+            continue
+        hour_folders.sort()  # ascending order (e.g., "00", "01", ...)
+
+        if day == today_str:
+            # Exclude the current hour since it is still active.
+            current_hour = datetime.now(timezone.utc).strftime("%H")
+            archivable = [h for h in hour_folders if h != current_hour]
+            if len(archivable) > archive_limit:
+                to_cleanup = archivable[:-archive_limit]
+            else:
+                to_cleanup = []
+        else:
+            # For past days, process all hour folders.
+            to_cleanup = hour_folders
+
+        for hour in to_cleanup:
+            hour_folder_path = os.path.join(day_path, hour)
+            video_file = os.path.join(day_path, f"{hour}.mp4")
+            # If the video doesn't exist, try to archive this hour folder.
+            if not os.path.exists(video_file):
+                print(f"[INFO] Archiving hour {day} {hour} in cleanup...")
+                success = archive_hour(day, hour, root_dir, effective_fps, bitrate, ffmpeg_path)
+                if not success:
+                    print(f"[WARN] Could not archive hour folder {hour_folder_path}. Skipping deletion.")
                     continue
-                if folder_date < cutoff_date:
-                    print(f"[INFO] Removing old folder: {item_path}")
-                    shutil.rmtree(item_path, ignore_errors=True)
-    else:  # archive_period == 'hour'
-        cutoff_time = now - timedelta(hours=archive_limit)
-        # For each day folder, check each PNG file's timestamp.
-        for item in os.listdir(root_dir):
-            item_path = os.path.join(root_dir, item)
-            if item == "archive":
-                continue
-            if os.path.isdir(item_path) and _looks_like_date(item):
-                for filename in os.listdir(item_path):
-                    if filename.endswith(".png"):
-                        ts_str = filename[:-4]  # remove ".png"
-                        try:
-                            ts = datetime.strptime(ts_str, "%Y-%m-%dT%H-%M-%S.%f")
-                            ts = ts.replace(tzinfo=timezone.utc)
-                        except ValueError:
-                            continue
-                        if ts < cutoff_time:
-                            full_path = os.path.join(item_path, filename)
-                            print(f"[INFO] Removing old screenshot: {full_path}")
-                            os.remove(full_path)
-                # Remove the day folder if it is empty.
-                if not os.listdir(item_path):
-                    print(f"[INFO] Removing empty folder: {item_path}")
-                    os.rmdir(item_path)
+            # Once the video exists, remove the hour folder with images.
+            print(f"[INFO] Removing hour folder: {hour_folder_path}")
+            shutil.rmtree(hour_folder_path, ignore_errors=True)
 
-def _looks_like_date(name):
-    """Return True if the folder name is formatted as YYYY-MM-DD."""
-    try:
-        datetime.strptime(name, "%Y-%m-%d")
-        return True
-    except ValueError:
-        return False
-
-def run_recorder(timescale, frames, root_dir, height, bitrate, archive_limit, ffmpeg_path, archive_period):
+def run_recorder(timescale, frames, root_dir, height, bitrate, archive_limit, ffmpeg_path):
     """
     Main loop:
       - Captures screenshots at an effective FPS.
-      - Archives images when the current archive period (day or hour) changes.
-      - Removes old images based on archive_limit.
+      - Saves screenshots into hourly folders (nested under a day folder).
+      - When the hour changes, archives the previous hour folder into a video.
+      - Periodically cleans up old hour folders (deleting the images only after archiving).
     """
-    archive_folder = os.path.join(root_dir, "archive")
-    make_sure_dir_exists(archive_folder)
-    
     # Calculate effective FPS and sleep interval.
     timescale_seconds = 3600 if timescale == 'hour' else 60
     effective_fps = frames / timescale_seconds
     sleep_interval = 1.0 / effective_fps
 
-    # For saving screenshots, always use a daily folder based on UTC date.
-    current_day_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    current_day_folder = os.path.join(root_dir, current_day_str)
-    make_sure_dir_exists(current_day_folder)
-
-    # Initialize current_period based on archive_period.
-    if archive_period == 'day':
-        current_period = current_day_str
-    else:
-        current_period = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+    # Initialize the folder structure using UTC time.
+    utc_now = datetime.now(timezone.utc)
+    current_day_str = utc_now.strftime("%Y-%m-%d")
+    current_hour_str = utc_now.strftime("%H")
+    current_hour_folder = os.path.join(root_dir, current_day_str, current_hour_str)
+    make_sure_dir_exists(current_hour_folder)
 
     print("[INFO] Starting screenshot capture...")
     print(f"       Timescale: {timescale}, Frames per period: {frames}, Effective FPS: {effective_fps:.2f}")
-    print(f"       Archive period: {archive_period}, Archive limit: {archive_limit}")
+    print(f"       Archive limit (latest hour directories to keep): {archive_limit}")
 
     with mss.mss() as sct:
         while True:
             utc_now = datetime.now(timezone.utc)
             new_day_str = utc_now.strftime("%Y-%m-%d")
-            # Update the day folder if the day has changed.
-            if new_day_str != current_day_str:
+            new_hour_str = utc_now.strftime("%H")
+
+            # If the hour (or day) has changed, archive the completed hour and run cleanup.
+            if new_day_str != current_day_str or new_hour_str != current_hour_str:
+                print(f"[INFO] Hour change detected. Archiving hour {current_day_str} {current_hour_str}...")
+                archive_hour(current_day_str, current_hour_str, root_dir, effective_fps, bitrate, ffmpeg_path)
+                cleanup_hour_folders(root_dir, archive_limit, ffmpeg_path, effective_fps, bitrate)
+
+                # Update the current folder to the new day/hour.
                 current_day_str = new_day_str
-                current_day_folder = os.path.join(root_dir, current_day_str)
-                make_sure_dir_exists(current_day_folder)
-
-            # Determine the new period string.
-            if archive_period == 'day':
-                new_period = new_day_str
-            else:
-                new_period = utc_now.strftime("%Y-%m-%dT%H")
-
-            # If the period has changed, archive the screenshots for the previous period.
-            if new_period != current_period:
-                if archive_period == 'day':
-                    # Archive the previous day folder.
-                    prev_day = current_period
-                    prev_day_folder = os.path.join(root_dir, prev_day)
-                    if os.path.exists(prev_day_folder):
-                        archive_day(prev_day_folder, archive_folder, effective_fps, bitrate, ffmpeg_path)
-                    else:
-                        print(f"[WARN] Expected day folder {prev_day_folder} not found for archiving.")
-                else:
-                    # Archive the previous hour's images.
-                    archive_hour(current_period, root_dir, archive_folder, effective_fps, bitrate, ffmpeg_path)
-                # Clean up images that are older than the archive limit.
-                cleanup_old_images(root_dir, archive_limit, archive_period)
-                current_period = new_period
+                current_hour_str = new_hour_str
+                current_hour_folder = os.path.join(root_dir, current_day_str, current_hour_str)
+                make_sure_dir_exists(current_hour_folder)
 
             # Capture a screenshot.
             utc_now = datetime.now(timezone.utc)
-            timestamp = utc_now.strftime("%Y-%m-%dT%H-%M-%S.%f")
-            screenshot_filename = os.path.join(current_day_folder, f"{timestamp}.png")
+            unix_seconds = int(utc_now.timestamp())
+            microseconds = utc_now.microsecond
+            screenshot_filename = os.path.join(
+                current_hour_folder,
+                f"{unix_seconds}{microseconds:06d}.png"
+            )
 
             screenshot = sct.grab(sct.monitors[1])
             with Image.frombytes("RGB", screenshot.size, screenshot.rgb) as img:
                 # Resize while maintaining aspect ratio.
                 width = int(screenshot.width * (height / screenshot.height))
                 resized_img = img.resize((width, height), Image.Resampling.LANCZOS)
-                resized_img.save(screenshot_filename, "PNG")
+                resized_img.save(screenshot_filename, "PNG", optimize=True)
 
             time.sleep(sleep_interval)
 
@@ -246,8 +262,7 @@ def main():
         height=args.height,
         bitrate=args.bitrate,
         archive_limit=args.archive_limit,
-        ffmpeg_path=args.ffmpeg_path,
-        archive_period=args.archive_period
+        ffmpeg_path=args.ffmpeg_path
     )
 
 if __name__ == "__main__":
