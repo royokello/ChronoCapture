@@ -22,7 +22,7 @@
 
 ## Getting Started
 
-1. **Clone the Repository**
+1. **Clone the Repository**  
    Clone this repository to your local machine.
 
 2. **Create and Activate a Virtual Environment**
@@ -38,62 +38,54 @@
    pip install -r requirements.txt
    ```
 
-4. **Run the Recorder**
-   For example, to capture 15 frames per minute with a 512p resolution and a 2-day retention policy:
+4. **Run the Recorder**  
+   For example, to capture 15 frames per minute with a 512p (default) resolution:
 
    ```bash
    python main.py --timescale "minute" --frames 15 --root_dir "Path\\To\\root" --ffmpeg_path "Path\\To\\ffmpeg.exe"
    ```
 
-## Running as a Windows Service
+## Running as a Background Task on Windows
 
-You can configure ChronoCapture to run as a Windows service so that it starts automatically when the system boots.
+While ChronoCapture is a Python script (and not a native Windows service), you can configure it to run in the background without displaying a command window using Task Scheduler. Follow these steps:
 
-Below is an example of creating a Windows service manually using `sc create`.
+1. **Open Task Scheduler**  
+   Press `Win + R`, type `taskschd.msc`, and hit Enter.
 
-1. **Determine Your Python Interpreter Path**
-   Decide which Python installation (system-wide or virtual environment) will run ChronoCapture. For example:
+2. **Create a New Task**  
+   In the Actions pane, click **Create Task...** (avoid using "Create Basic Task" for more control).
 
-   - System-wide: `C:\Python39\python.exe`
-   - Virtual environment: `C:\Path\To\ChronoCapture\venv\Scripts\python.exe`
+3. **General Tab**  
+   - **Name**: Enter a name for your task (e.g., `ChronoCapture Background Task`).
+   - **Security Options**:  
+     - Select **Run whether user is logged on or not**.
+     - Check the **Hidden** box to ensure the task runs without displaying a window.
 
-2. **Create the Service via `sc create`**
-   Open an elevated Command Prompt (Run as Administrator) and run:
+Below is the updated "Actions Tab" section with the sensitive path names replaced by placeholders:
 
-   ```cmd
-   sc create ChronoCaptureService binPath= "Path\\To\\Python.exe\" \"Path\\To\\ChronoCapture\\main.py\" --timescale "minute" --frames 15 --root_dir "Path\\To\\root" --ffmpeg_path "Path\\To\\ffmpeg.exe"
-   ```
-
-   **Explanation**:
-   - `ChronoCaptureService` is the name of the Windows service.
-   - `binPath=` must include the path to your chosen Python, followed by the path to `main.py` and ChronoCapture's arguments.
-   - `start= auto` configures the service to start automatically on system boot.
-
-   **Important**:
-   - Pay attention to **double quotes** and **escaping backslashes**. If your paths have spaces, ensure they're properly quoted.
-   - The example above sets up ChronoCapture to capture 15 images per hour and archive them hourly, storing data in `C:\recordings`.
-
-3. **Start the Service**
-
-   ```cmd
-   net start ChronoCaptureService
-   ```
-
-   The service should begin running in the background. Verify that new screenshots and archived videos appear in the specified location.
-
-4. **Managing the Service**
-   - **Stop the service**:
-     ```cmd
-     net stop ChronoCaptureService
+4. **Actions Tab**  
+   - Click **New...**.  
+   - **Action**: Choose **Start a program**.  
+   - **Program/script**: Enter the full path to your Python executable. For example:  
      ```
-   - **Remove the service** (if no longer needed):
-     ```cmd
-     sc delete ChronoCaptureService
+     C:\Path\To\Your\VirtualEnv\Scripts\python.exe
+     ```  
+   - **Add arguments (optional)**: Enter the path to your script and all necessary parameters. For example:  
      ```
+     "C:\Path\To\Your\Project\main.py" --timescale minute --frames 15 --root_dir "D:\Your\Root\Directory" --ffmpeg_path "D:\Path\To\ffmpeg.exe"
+     ```  
+   - **Start in (optional)**: Specify the working directory for your script (e.g., the directory where your script resides).
 
-5. **Logs & Troubleshooting**
-   - Check `sc query ChronoCaptureService` for status.
-   - Use **Services** under Windows **Administrative Tools** to manage start/stop or set recovery options.
+5. **Triggers Tab**  
+   - Add a new trigger based on when you want ChronoCapture to run (e.g., **At startup** or on a custom schedule).
+
+6. **Conditions and Settings Tabs**  
+   - Adjust these settings as needed for your environment.
+
+7. **Save the Task**  
+   - Click **OK** and provide your credentials if prompted.
+
+Once configured, ChronoCapture will run in the background according to the specified trigger—without opening a visible command prompt window.
 
 ## License
 
@@ -102,4 +94,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Contributing
 
 Pull requests and bug reports are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
+```
